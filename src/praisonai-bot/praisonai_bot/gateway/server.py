@@ -4586,17 +4586,23 @@ class WebSocketGateway:
                 except Exception:
                     pass
 
-        async def _call_async(fn: Any) -> Any:
+        def _call_kwargs(fn: Any) -> Dict[str, Any]:
+            if not _kw:
+                return _kw
+            import inspect
+
             try:
-                result = await fn(content, **_kw)
+                inspect.signature(fn).bind(content, **_kw)
             except TypeError:
-                if not _kw:
-                    raise
-                # Entry point predates cancel_token: fall back to the shared
-                # attribute for this turn (best-effort, non-isolated).
+                # Select the legacy convention before invoking the entry point;
+                # an application TypeError must never replay an agent turn.
                 if hasattr(agent, "interrupt_controller"):
                     agent.interrupt_controller = interrupt
-                result = await fn(content)
+                return {}
+            return _kw
+
+        async def _call_async(fn: Any) -> Any:
+            result = await fn(content, **_call_kwargs(fn))
             # No ``await`` between the turn completing and the snapshot: the
             # single-threaded loop cannot run another turn in between.
             _snapshot()
@@ -4610,14 +4616,7 @@ class WebSocketGateway:
         loop = asyncio.get_running_loop()
 
         def _call_sync() -> Any:
-            try:
-                result = agent.chat(content, **_kw)
-            except TypeError:
-                if not _kw:
-                    raise
-                if hasattr(agent, "interrupt_controller"):
-                    agent.interrupt_controller = interrupt
-                result = agent.chat(content)
+            result = agent.chat(content, **_call_kwargs(agent.chat))
             # Snapshot in *this* worker thread, immediately after the turn
             # produced its result, before the thread returns to the pool and a
             # concurrent turn can overwrite the agent's shared metrics.
